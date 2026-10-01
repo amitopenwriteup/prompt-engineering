@@ -15,7 +15,10 @@
 - Disposable cluster + `kubectl` (admin context)
 - Python 3.10+ and `pip install google-genai`
 - Gemini API key from Google AI Studio: `export GEMINI_API_KEY=...`
-- Check the current model name in the Gemini docs and set `export GEMINI_MODEL=gemini-2.5-flash` (or newer)
+- Pick the model: `export GEMINI_MODEL=gemini-flash-lite-latest`
+  - Model names are retired often (a `404 ... no longer available` error means exactly that). The `-latest` aliases avoid this.
+  - A `503 UNAVAILABLE` means that model is overloaded. Switch to another one, e.g. `gemini-flash-latest`.
+  - To see which models work for your key, run a quick `client.models.list()` test and use one that replies.
 
 ## Agenda
 
@@ -130,11 +133,11 @@ One script, four prompt "levels" you will unlock lab by lab. The harness fetches
 ```python
 import os, re, secrets, shlex, subprocess, sys
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 
 LEVEL = int(os.environ.get("LEVEL", "1"))
 KUBECONFIG = os.environ.get("ASSISTANT_KUBECONFIG")   # used in Lab 6
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-lite-latest")
 K8S_NAME = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 ALLOWED_NS = {"workshop"}
 
@@ -163,6 +166,21 @@ def kubectl(args):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     return (r.stdout + r.stderr).strip()
 
+def generate(client, system, user):
+    try:
+        return client.models.generate_content(
+            model=MODEL, contents=user,
+            config=types.GenerateContentConfig(
+                system_instruction=system, temperature=0))
+    except errors.ClientError as e:
+        if "instruction" not in str(e).lower():
+            raise
+        print("[model has no system role; merging into user turn]", file=sys.stderr)
+        merged = f"[SYSTEM INSTRUCTIONS]\n{system}\n[END SYSTEM INSTRUCTIONS]\n\n{user}"
+        return client.models.generate_content(
+            model=MODEL, contents=merged,
+            config=types.GenerateContentConfig(temperature=0))
+
 def main(ns, workload, task):
     if LEVEL >= 4:                                   # Lab 4: validate variables
         for v in (ns, workload):
@@ -184,9 +202,7 @@ def main(ns, workload, task):
         user = f"Logs:\n{logs}\nTask: {task}"
 
     client = genai.Client()                          # reads GEMINI_API_KEY
-    resp = client.models.generate_content(
-        model=MODEL, contents=user,
-        config=types.GenerateContentConfig(system_instruction=system, temperature=0))
+    resp = generate(client, system, user)
     print("=== MODEL ===\n", resp.text)
 
     print("=== EXECUTING ===")
@@ -201,6 +217,8 @@ if __name__ == "__main__":
 ```
 
 > The two-line `events` stub is deliberately inert. Ignore it, or delete it.
+
+> **About `generate()`:** some models (certain Gemma variants) reject `system_instruction`. The helper then merges the system prompt into the user turn. That weakens the system/user separation from Lab 3, so note which model you used when comparing results.
 
 Usage: `LEVEL=1 python assistant.py workshop crashloop "Why is this failing?"`
 
